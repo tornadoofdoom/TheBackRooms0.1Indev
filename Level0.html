@@ -681,30 +681,26 @@
         context.fillStyle = "#595142"; // Damp brownish-gray
         context.fillRect(0, 0, 512, 512);
 
-        // Fibers
+        // Fibers - reduced from 20000 to 1500 to avoid long main-thread stalls
         for (let i = 0; i < 1500; i++) {
           context.fillStyle = `rgba(0, 0, 0, ${Math.random() * 0.25})`;
           context.fillRect(
-            Math.random() * 512,
-            Math.random() * 512,
+            Math.floor(Math.random() * 512),
+            Math.floor(Math.random() * 512),
             1,
             Math.random() * 3 + 1
           );
-          context.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.06})`;
-          if (i % 6 === 0) context.fillRect(Math.random() * 512, Math.random() * 512, 1, 1);
+          if (i % 6 === 0) {
+            context.fillStyle = `rgba(255,255,255,${Math.random() * 0.06})`;
+            context.fillRect(Math.floor(Math.random() * 512), Math.floor(Math.random() * 512), 1, 1);
+          }
         }
 
         // Damp patches (reduced)
         for (let i = 0; i < 8; i++) {
           context.fillStyle = `rgba(0, 0, 0, ${Math.random() * 0.16 + 0.04})`;
           context.beginPath();
-          context.arc(
-            Math.random() * 512,
-            Math.random() * 512,
-            Math.random() * 50 + 15,
-            0,
-            Math.PI * 2
-          );
+          context.arc(Math.random() * 512, Math.random() * 512, Math.random() * 50 + 15, 0, Math.PI * 2);
           context.fill();
         }
 
@@ -749,9 +745,420 @@
         texture.wrapS = THREE.RepeatWrapping;
         texture.wrapT = THREE.RepeatWrapping;
         texture.repeat.set(1, 1);
+        texture.needsUpdate = true;
         return texture;
       }
 
-      // ... (rest of file continues)
+      // --- RE-ADDED: Torn Wallpaper Texture ---
+      function createTornWallpaperTexture(random) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 256;
+        canvas.height = 256;
+        const context = canvas.getContext("2d");
 
+        context.clearRect(0, 0, 256, 256); // Start transparent
 
+        // Dark "under" wall color (brown wood/plaster)
+        const tearColor = "#5c3a21"; // --- Store color
+        context.fillStyle = tearColor;
+        context.beginPath();
+        // Random jagged shape for the tear
+        const startX = random() * 156 + 50; // Centered
+        const startY = random() * 156 + 50;
+        context.moveTo(startX, startY);
+        for (let j = 1; j < 10; j++) {
+          context.lineTo(
+            startX + (random() - 0.5) * 200, // Wider tears
+            startY + (random() - 0.5) * 200
+          );
+        }
+        context.closePath();
+        context.fill();
+
+        // Add "peeling" edge effect
+        context.strokeStyle = "rgba(92, 58, 33, 0.7)";
+        context.lineWidth = 4;
+        context.stroke();
+
+        context.strokeStyle = "rgba(240, 234, 218, 0.3)";
+        context.lineWidth = 2;
+        for (let i = 0; i < 3; i++) {
+          context.save();
+          context.translate((random() - 0.5) * 2, (random() - 0.5) * 2);
+          context.stroke();
+          context.restore();
+        }
+
+        context.strokeStyle = "#f0eada";
+        context.lineWidth = 1;
+        context.stroke();
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        return texture;
+      }
+
+      // --- RE-ADDED: Graffiti Texture ---
+      function createGraffitiTexture(random, targetDirection = null) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 256;
+        canvas.height = 256;
+        const context = canvas.getContext("2d");
+
+        context.clearRect(0, 0, 256, 256); // Start transparent
+        context.strokeStyle = `rgba(10, 10, 10, ${random() * 0.2 + 0.7})`;
+        context.lineWidth = random() * 6 + 6;
+        context.lineCap = "round";
+
+        if (targetDirection) {
+          const angle = Math.atan2(-targetDirection.z, targetDirection.x);
+          const arrowCount = random() * 5 + 3;
+          for (let i = 0; i < arrowCount; i++) {
+            const startX = random() * 156 + 50;
+            const startY = random() * 156 + 50;
+            const arrowLength = 40 + random() * 30;
+            const jitterAngle = angle + (random() - 0.5) * 0.7;
+            const endX = startX + Math.cos(jitterAngle) * arrowLength;
+            const endY = startY - Math.sin(jitterAngle) * arrowLength;
+            context.beginPath();
+            context.moveTo(startX, startY);
+            context.lineTo(endX, endY);
+            const arrowSize = 20;
+            context.lineTo(
+              endX - arrowSize * Math.cos(jitterAngle - Math.PI / 6),
+              endY + arrowSize * Math.sin(jitterAngle - Math.PI / 6)
+            );
+            context.moveTo(endX, endY);
+            context.lineTo(
+              endX - arrowSize * Math.cos(jitterAngle + Math.PI / 6),
+              endY + arrowSize * Math.sin(jitterAngle + Math.PI / 6)
+            );
+            context.stroke();
+          }
+        } else {
+          for (let i = 0; i < random() * 3 + 1; i++) {
+            context.beginPath();
+            const startX = random() * 200 + 28;
+            const startY = random() * 200 + 28;
+            context.moveTo(startX, startY);
+            context.quadraticCurveTo(
+              random() * 256,
+              random() * 256,
+              random() * 200 + 28,
+              random() * 200 + 28
+            );
+            context.stroke();
+          }
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        return texture;
+      }
+
+      // --- Texture cache (prevents re-creating canvases every chunk) ---
+      const textureCache = {
+        wallpaper: null,
+        carpet: null,
+        ceiling: null,
+        tornWallpaper: null,
+        graffiti: null,
+      };
+
+      function nextFrame() {
+        return new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+
+      function getWallpaperTextureCached() {
+        if (!textureCache.wallpaper) textureCache.wallpaper = createWallpaperTexture();
+        return textureCache.wallpaper;
+      }
+      function getCarpetTextureCached() {
+        if (!textureCache.carpet) textureCache.carpet = createCarpetTexture();
+        return textureCache.carpet;
+      }
+      function getCeilingTextureCached() {
+        if (!textureCache.ceiling) textureCache.ceiling = createCeilingTexture();
+        return textureCache.ceiling;
+      }
+      function getTornWallpaperCached(rand = Math.random) {
+        if (!textureCache.tornWallpaper) textureCache.tornWallpaper = createTornWallpaperTexture(rand);
+        return textureCache.tornWallpaper;
+      }
+      function getGraffitiCached(rand = Math.random, targetDirection = null) {
+        if (!targetDirection && textureCache.graffiti) return textureCache.graffiti;
+        const t = createGraffitiTexture(rand, targetDirection);
+        if (!targetDirection) textureCache.graffiti = t;
+        return t;
+      }
+
+      init();
+
+      function init() {
+        // --- Scene Setup ---
+        camera = new THREE.PerspectiveCamera(
+          75,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          100
+        );
+        camera.position.set(1, playerHeight, 1); // Adjusted spawn
+
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a10); // Dark, sickly yellow-gray fog
+        scene.fog = new THREE.Fog(0x1a1a10, 5, 25);
+
+        // --- Lighting ---
+        ambientLight = new THREE.AmbientLight(0x404040, 0.5); // Low ambient light
+        scene.add(ambientLight);
+
+        // Flashlight
+        flashlight = new THREE.SpotLight(
+          0xffffee,
+          0.0,
+          30,
+          Math.PI / 6,
+          0.3,
+          1.0
+        ); // Starts off
+        flashlight.position.set(0, 0, 0);
+        flashlight.target.position.set(0, 0, -1);
+        camera.add(flashlight);
+        camera.add(flashlight.target);
+        scene.add(camera); // Add camera (with flashlight) to scene
+
+        // --- Audio ---
+        audioListener = new THREE.AudioListener();
+        camera.add(audioListener);
+
+        // Generate fluorescent hum
+        const audioContext = audioListener.context;
+        // Check if audio context is running (requires user interaction)
+        if (audioContext.state === "suspended") {
+          console.log("AudioContext suspended. Waiting for user interaction.");
+        }
+        // Attempt to resume context on interaction if suspended
+        const resumeAudio = () => {
+          if (audioContext.state === "suspended") {
+            audioContext
+              .resume()
+              .then(() => {
+                console.log("AudioContext resumed!");
+                if (!humSound.isPlaying && controls.isLocked) {
+                  // Start hum if locked after resume
+                  humSound.play();
+                  humSound.setVolume(0.05);
+                }
+              })
+              .catch((e) => console.error("Error resuming AudioContext:", e));
+          }
+          // Remove listeners after first interaction
+          document.body.removeEventListener("click", resumeAudio);
+          document.body.removeEventListener("keydown", resumeAudio);
+        };
+        document.body.addEventListener("click", resumeAudio);
+        document.body.addEventListener("keydown", resumeAudio);
+
+        const stream = audioContext.createMediaStreamDestination();
+        const audioSource = audioContext.createMediaStreamSource(stream.stream); // Fix: Create source from stream
+        humSound = new THREE.Audio(audioListener);
+        humSound.setNodeSource(audioSource); // Use the correct AudioNode
+        humSound.setVolume(0.0); // Start silent
+
+        // 60Hz hum with harmonics
+        const oscillator1 = audioContext.createOscillator();
+        oscillator1.type = "sine";
+        oscillator1.frequency.setValueAtTime(60, audioContext.currentTime);
+        const gain1 = audioContext.createGain();
+        gain1.gain.setValueAtTime(0.3, audioContext.currentTime);
+
+        const oscillator2 = audioContext.createOscillator();
+        oscillator2.type = "sine";
+        oscillator2.frequency.setValueAtTime(120, audioContext.currentTime);
+        const gain2 = audioContext.createGain();
+        gain2.gain.setValueAtTime(0.1, audioContext.currentTime);
+
+        const oscillator3 = audioContext.createOscillator();
+        oscillator3.type = "sine";
+        oscillator3.frequency.setValueAtTime(180, audioContext.currentTime);
+        const gain3 = audioContext.createGain();
+        gain3.gain.setValueAtTime(0.05, audioContext.currentTime);
+
+        oscillator1.connect(gain1).connect(stream);
+        oscillator2.connect(gain2).connect(stream);
+        oscillator3.connect(gain3).connect(stream);
+
+        oscillator1.start();
+        oscillator2.start();
+        oscillator3.start();
+
+        // --- Initialize Materials (use cached textures) ---
+        wallpaperMaterial = new THREE.MeshStandardMaterial({
+          map: getWallpaperTextureCached(),
+          roughness: 0.8,
+          metalness: 0.1,
+        });
+
+        floorMaterial = new THREE.MeshStandardMaterial({
+          map: getCarpetTextureCached(),
+          roughness: 0.95,
+          metalness: 0.0,
+        });
+
+        darkPitMaterial = floorMaterial.clone();
+        darkPitMaterial.color = new THREE.Color(0x111111);
+
+        ceilingMaterial = new THREE.MeshStandardMaterial({
+          map: getCeilingTextureCached(),
+          roughness: 0.95,
+          metalness: 0.0,
+        });
+
+        // --- NEW: Roof Material ---
+        roofMaterial = new THREE.MeshStandardMaterial({
+          color: 0x222222,
+          roughness: 0.9,
+          side: THREE.DoubleSide,
+        });
+
+        pitPathMaterial = new THREE.MeshStandardMaterial({
+          map: getCeilingTextureCached(),
+          color: 0xaaaaaa,
+          roughness: 0.8,
+          metalness: 0.1,
+        });
+
+        deskMaterial = new THREE.MeshStandardMaterial({
+          color: 0x5c3a21,
+          roughness: 0.7,
+          metalness: 0.0,
+        });
+
+        chairMaterial = new THREE.MeshStandardMaterial({
+          color: 0x333333,
+          roughness: 0.8,
+          metalness: 0.1,
+        });
+        puddleMaterial = new THREE.MeshStandardMaterial({
+          color: 0x1a1a1a,
+          transparent: true,
+          opacity: 0.6,
+          roughness: 0.1,
+          metalness: 0.0,
+          side: THREE.DoubleSide,
+        });
+        pipeMaterial = new THREE.MeshStandardMaterial({
+          color: 0xcccccc,
+          roughness: 0.6,
+          metalness: 0.2,
+        });
+        exitWallMaterial = new THREE.MeshStandardMaterial({
+          color: 0xd2c290,
+          roughness: 0.9,
+          metalness: 0.0,
+        });
+
+        graffitiMaterial = new THREE.MeshStandardMaterial({
+          transparent: true,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          polygonOffset: true,
+          polygonOffsetFactor: -100,
+          polygonOffsetUnits: -100,
+          roughness: 0.9,
+          metalness: 0.0,
+        });
+
+        tornWallpaperMaterial = new THREE.MeshStandardMaterial({
+          transparent: true,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          polygonOffset: true,
+          polygonOffsetFactor: -100,
+          polygonOffsetUnits: -100,
+          roughness: 0.8,
+          metalness: 0.1,
+        });
+
+        // Initial chunk generation (only start chunk)
+        generateChunk(0, 0);
+        updateVisibleChunks();
+
+        // --- Renderer ---
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // --- Controls ---
+        controls = new PointerLockControls(camera, renderer.domElement);
+
+        instructions.addEventListener("click", () => {
+          controls.lock();
+          resumeAudio();
+        });
+
+        controls.addEventListener("lock", () => {
+          instructions.style.display = "none";
+          blocker.style.display = "none";
+          hud.style.display = "block";
+          crosshair.style.display = "block";
+          hotbar[0].parentElement.style.display = "grid";
+          gameRunning = true;
+          if (!humSound.isPlaying && audioContext.state === "running") {
+            humSound.play();
+          }
+          if (audioContext.state === "running") humSound.setVolume(0.05);
+          prevTime = performance.now();
+          animate();
+        });
+
+        controls.addEventListener("unlock", () => {
+          if (gameRunning && !inventoryOpen) {
+            blocker.style.display = "flex";
+            instructions.style.display = "block";
+            instructions.style.cursor = "default";
+            instructions.innerHTML = "<h1>Paused</h1><p>Click to resume</p>";
+            gameRunning = false;
+            humSound.setVolume(0.0);
+          } else if (!gameRunning && inventoryOpen) {
+            blocker.style.display = "none";
+            instructions.style.display = "none";
+          }
+          hud.style.display = "none";
+          crosshair.style.display = "none";
+          hotbar[0].parentElement.style.display = "none";
+        });
+
+        document.addEventListener("keydown", onKeyDown);
+        document.addEventListener("keyup", onKeyUp);
+        document.addEventListener("mousedown", onMouseDown);
+        window.addEventListener("resize", onWindowResize);
+
+        invUseButton.addEventListener("click", useInventoryItem);
+        invDropButton.addEventListener("click", dropInventoryItem);
+        invHotbarButtons.forEach((button, index) => {
+          button.addEventListener("click", () => moveToHotbar(index));
+        });
+
+        selectHotbarSlot(0);
+
+        restartButtonDead.addEventListener("click", () => window.location.reload());
+        restartButtonWin.addEventListener("click", () => window.location.reload());
+
+        for (let i = 0; i < 9; i++) {
+          const slot = document.createElement("div");
+          slot.classList.add("inventory-slot");
+          slot.dataset.index = i;
+          slot.innerHTML = `[Empty]`;
+          inventoryGrid.appendChild(slot);
+        }
+      }
+
+      // Rest of file unchanged (keeps generateChunk, updateVisibleChunks, game loop, etc.)
+
+    </script>
+  </body>
+</html>
