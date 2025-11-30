@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Backrooms - Cutscene</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      body,
+      html {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background-color: #000;
+        color: #fff;
+        font-family: "Courier New", Courier, monospace;
+      }
+      canvas {
+        display: block;
+      }
+      #overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 1);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+        cursor: pointer;
+        z-index: 10;
+        display: none; /* <-- HIDE OVERLAY FOR AUTOSTART */
+      }
+      #overlay h1 {
+        font-size: 2.5rem;
+        margin: 0;
+        color: #fff;
+        border: 2px solid #fff;
+        padding: 10px 20px;
+        display: none; /* <-- Hide the H1 */
+      }
+      #overlay p {
+        font-size: 1.5rem; /* <-- Make this the main prompt */
+        color: #aaa;
+      }
+      #skip-message {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 2rem;
+        color: #fff;
+        display: none;
+        z-index: 5;
+        text-shadow: 0 0 10px #000;
+      }
+      #blackout {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: #000;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 4;
+        transition: opacity 0.2s ease-in-out;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Overlay is hidden -->
+    <div id="overlay">
+      <h1>[ START ]</h1>
+      <p>Click to begin</p>
+    </div>
+
+    <!-- Blackout overlay for impact -->
+    <div id="blackout"></div>
+
+    <!-- Skip message -->
+    <div id="skip-message">Loading Level 0...</div>
+
+    <!-- Import maps for Three.js ONLY -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+
+    <!-- Main Three.js Application -->
+    <script type="module">
+      import * as THREE from "three";
+      // Tone.js removed
+      import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+      import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+      import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+      import { FilmPass } from "three/addons/postprocessing/FilmPass.js";
+      import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+      import { Reflector } from "three/addons/objects/Reflector.js";
+
+      // --- Globals ---
+      let scene, camera, renderer, composer, clock;
+      let streetGroup, backroomsGroup;
+      let bloomPass, filmPass, chromaticAberrationPass, desaturationPass;
+      let blackoutOverlay, skipMessageOverlay;
+
+      // Audio variables removed
+      let redirecting = false;
+
+      // Cutscene state machine
+      const STATE = {
+        START: 0,
+        WALKING: 1,
+        GLITCH: 2,
+        FALLING: 3,
+        IMPACT: 4,
+        STAND_UP: 5,
+        REVEAL: 6,
+        END: 7,
+      };
+      let cutsceneState = STATE.START;
+
+      // --- Shaders ---
+
+      // Chromatic Aberration Shader
+      const ChromaticAberrationShader = {
+        uniforms: {
+          tDiffuse: { value: null },
+          uDistortion: { value: 0.0 },
+        },
+        vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+        fragmentShader: `
+                uniform sampler2D tDiffuse;
+                uniform float uDistortion;
+                varying vec2 vUv;
+                void main() {
+                    vec2 center = vec2(0.5, 0.5);
+                    float dist = distance(vUv, center);
+                    float distortion = uDistortion * dist * 0.1;
+                    
+                    vec4 color;
+                    color.r = texture2D(tDiffuse, vUv + vec2(distortion, 0.0)).r;
+                    color.g = texture2D(tDiffuse, vUv).g;
+                    color.b = texture2D(tDiffuse, vUv - vec2(distortion, 0.0)).b;
+                    color.a = texture2D(tDiffuse, vUv).a;
+
+                    gl_FragColor = color;
+                }
+            `,
+      };
+
+      // Desaturation Shader
+      const DesaturationShader = {
+        uniforms: {
+          tDiffuse: { value: null },
+          uAmount: { value: 0.0 },
+        },
+        vertexShader: `
+                varying vec2 vUv;
+                void main() {
+                    vUv = uv;
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+        fragmentShader: `
+                uniform sampler2D tDiffuse;
+                uniform float uAmount;
+                varying vec2 vUv;
+                void main() {
+                    vec4 color = texture2D(tDiffuse, vUv);
+                    float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+                    gl_FragColor = vec4(mix(color.rgb, vec3(gray), uAmount), color.a);
+                }
+            `,
+      };
+
+      // --- Initialization ---
+      function init() {
+        // Get overlays
+        blackoutOverlay = document.getElementById("blackout");
+        skipMessageOverlay = document.getElementById("skip-message");
+
+        // Basic setup
+        clock = new THREE.Clock(false);
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(
+          75,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          1000
+        );
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        document.body.appendChild(renderer.domElement);
+
+        // Setup scenes
+        setupStreetScene();
+        setupBackroomsScene();
+
+        // Post-processing
+        setupPostProcessing();
+
+        // Audio setup removed
+
+        // Event Listeners
+        window.addEventListener("resize", onWindowResize);
+        document.addEventListener("keydown", onKeyDown);
+
+        startCutscene(); // <-- CALL START AUTOMATICALLY
+      }
+
+      function setupPostProcessing() {
+        composer = new EffectComposer(renderer);
+        const renderPass = new RenderPass(scene, camera);
+        composer.addPass(renderPass);
+
+        // Bloom (for streetlights and fluorescents)
+        bloomPass = new UnrealBloomPass(
+          new THREE.Vector2(window.innerWidth, window.innerHeight),
+          1.5,
+          0.4,
+          0.85
+        );
+        bloomPass.threshold = 0.9;
+        bloomPass.strength = 1.2;
+        bloomPass.radius = 0.5;
+        composer.addPass(bloomPass);
+
+        // Film (for glitch static)
+        filmPass = new FilmPass(0.5, 0.1, 1024, false);
+        filmPass.enabled = false;
+        composer.addPass(filmPass);
+
+        // Chromatic Aberration (for glitch)
+        chromaticAberrationPass = new ShaderPass(ChromaticAberrationShader);
+        chromaticAberrationPass.enabled = false;
+        composer.addPass(chromaticAberrationPass);
+
+        // Desaturation (for fall)
+        desaturationPass = new ShaderPass(DesaturationShader);
+        desaturationPass.enabled = false;
+        composer.addPass(desaturationPass);
+      }
+
+      // --- Scene Creation ---
+
+      function setupStreetScene() {
+        streetGroup = new THREE.Group();
+        scene.add(streetGroup);
+
+        // Fog
+        scene.fog = new THREE.FogExp2(0x0a101a, 0.03);
+
+        // Ambient light
+        const ambient = new THREE.AmbientLight(0x404080, 0.3); // <-- Kept brighter light
+        streetGroup.add(ambient);
+
+        // Ground (street)
+        const streetTexture = createStreetTexture(256);
+        const streetMat = new THREE.MeshStandardMaterial({
+          map: streetTexture,
+        });
+        const streetGeo = new THREE.PlaneGeometry(30, 100);
+        const street = new THREE.Mesh(streetGeo, streetMat);
+        street.rotation.x = -Math.PI / 2;
+        street.receiveShadow = true;
+        streetGroup.add(street);
+
+        // Sidewalk
+        const sidewalkTexture = createSidewalkTexture(256);
+        const sidewalkMat = new THREE.MeshStandardMaterial({
+          map: sidewalkTexture,
+        });
+        const sidewalkGeo = new THREE.BoxGeometry(8, 0.2, 100);
+
+        const sidewalkLeft = new THREE.Mesh(sidewalkGeo, sidewalkMat);
+        sidewalkLeft.position.set(-9, 0.1, 0);
+        sidewalkLeft.receiveShadow = true;
+        streetGroup.add(sidewalkLeft);
+
+        const sidewalkRight = new THREE.Mesh(sidewalkGeo, sidewalkMat);
+        sidewalkRight.position.set(9, 0.1, 0);
+        sidewalkRight.receiveShadow = true;
+        streetGroup.add(sidewalkRight);
+
+        // Buildings
+        const buildingTexture = createBuildingTexture(512);
+        const buildingMat = new THREE.MeshStandardMaterial({
+          map: buildingTexture,
+          roughness: 0.8,
+          metalness: 0.1,
+        });
+
+        for (let i = 0; i < 10; i++) {
+          const height = Math.random() * 40 + 20;
+          const depth = Math.random() * 8 + 8;
+          const buildingGeo = new THREE.BoxGeometry(10, height, depth);
+
+          const buildingLeft = new THREE.Mesh(buildingGeo, buildingMat);
+          buildingLeft.position.set(-18, height / 2, i * 10 - 45);
+          buildingLeft.castShadow = true;
+          streetGroup.add(buildingLeft);
+
+          const height2 = Math.random() * 40 + 20;
+          const depth2 = Math.random() * 8 + 8;
+          const buildingGeo2 = new THREE.BoxGeometry(10, height2, depth2);
+
+          const buildingRight = new THREE.Mesh(buildingGeo2, buildingMat);
+          buildingRight.position.set(18, height2 / 2, i * 10 - 45);
+          buildingRight.castShadow = true;
+          streetGroup.add(buildingRight);
+        }
+
+        // Streetlights
+        const poleMat = new THREE.MeshStandardMaterial({
+          color: 0x333333,
+          roughness: 0.5,
+          metalness: 0.8,
+        });
+        const lightMat = new THREE.MeshStandardMaterial({
+          color: 0xffd8a0,
+          emissive: 0xffd8a0,
+          emissiveIntensity: 2,
+        });
+
+        for (let i = 0; i < 5; i++) {
+          const poleGeo = new THREE.CylinderGeometry(0.1, 0.1, 6, 8);
+          const pole = new THREE.Mesh(poleGeo, poleMat);
+          pole.position.set(5.5, 3, i * 20 - 40);
+          pole.castShadow = true;
+          streetGroup.add(pole);
+
+          const armGeo = new THREE.BoxGeometry(2, 0.1, 0.1);
+          const arm = new THREE.Mesh(armGeo, poleMat);
+          arm.position.set(4.5, 5.9, i * 20 - 40);
+          streetGroup.add(arm);
+
+          const lightGeo = new THREE.SphereGeometry(0.2);
+          const lightBulb = new THREE.Mesh(lightGeo, lightMat);
+          lightBulb.position.set(3.5, 5.8, i * 20 - 40);
+          streetGroup.add(lightBulb);
+
+          const pointLight = new THREE.PointLight(0xffd8a0, 80, 20, 2); // <-- Kept brighter light
+          pointLight.position.set(3.5, 5.5, i * 20 - 40);
+          pointLight.castShadow = true;
+          streetGroup.add(pointLight);
+        }
+
+        // Parked Cars (simple boxes)
+        const carMat = new THREE.MeshStandardMaterial({
+          color: 0x222233,
+          roughness: 0.2,
+          metalness: 0.1,
+        });
+        for (let i = 0; i < 5; i++) {
+          const carGeo = new THREE.BoxGeometry(2, 1.2, 4);
+          const car = new THREE.Mesh(carGeo, carMat);
+          car.position.set(3.5, 0.6, i * 12 - 30);
+          car.rotation.y = -0.1;
+          car.castShadow = true;
+          car.receiveShadow = true;
+          streetGroup.add(car);
+        }
+
+        // Camera start position
+        camera.position.set(7, 1.7, 40); // On the right sidewalk
+        camera.lookAt(7, 1.7, 0);
+      }
+
+      function setupBackroomsScene() {
+        backroomsGroup = new THREE.Group();
+        backroomsGroup.position.y = -200; // Place it far below
+        scene.add(backroomsGroup);
+
+        // Floor
+        const carpetTexture = createCarpetTexture(1024);
+        carpetTexture.repeat.set(20, 20);
+        carpetTexture.wrapS = THREE.RepeatWrapping;
+        carpetTexture.wrapT = THREE.RepeatWrapping;
+        const carpetMat = new THREE.MeshStandardMaterial({
+          map: carpetTexture,
+          roughness: 0.9,
+        });
+        const floorGeo = new THREE.PlaneGeometry(100, 100);
+        const floor = new THREE.Mesh(floorGeo, carpetMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        backroomsGroup.add(floor);
+
+        // Ceiling
+        const ceilingTexture = createCeilingTexture(512);
+        ceilingTexture.repeat.set(50, 50);
+        ceilingTexture.wrapS = THREE.RepeatWrapping;
+        ceilingTexture.wrapT = THREE.RepeatWrapping;
+        const ceilingMat = new THREE.MeshStandardMaterial({
+          map: ceilingTexture,
+          roughness: 0.8,
+        });
+        const ceilingGeo = new THREE.PlaneGeometry(100, 100);
+        const ceiling = new THREE.Mesh(ceilingGeo, ceilingMat);
+        ceiling.rotation.x = Math.PI / 2;
+        ceiling.position.y = 3.5;
+        backroomsGroup.add(ceiling);
+
+        // Walls
+        const wallTexture = createWallpaperTexture(512);
+        wallTexture.repeat.set(1, 1); // We'll stretch it
+        wallTexture.wrapS = THREE.RepeatWrapping;
+        wallTexture.wrapT = THREE.RepeatWrapping;
+        const wallMat = new THREE.MeshStandardMaterial({
+          map: wallTexture,
+          roughness: 0.9,
+        });
+        const wallGeo = new THREE.BoxGeometry(100, 3.5, 0.2);
+
+        const wall1 = new THREE.Mesh(wallGeo, wallMat);
+        wall1.position.set(0, 1.75, -50);
+        wall1.castShadow = true;
+        backroomsGroup.add(wall1);
+
+        const wall2 = new THREE.Mesh(wallGeo, wallMat);
+        wall2.position.set(0, 1.75, 50);
+        wall2.castShadow = true;
+        backroomsGroup.add(wall2);
+
+        const wall3 = new THREE.Mesh(wallGeo, wallMat);
+        wall3.rotation.y = Math.PI / 2;
+        wall3.position.set(-50, 1.75, 0);
+        wall3.castShadow = true;
+        backroomsGroup.add(wall3);
+
+        const wall4 = new THREE.Mesh(wallGeo, wallMat);
+        wall4.rotation.y = Math.PI / 2;
+        wall4.position.set(50, 1.75, 0);
+        wall4.castShadow = true;
+        backroomsGroup.add(wall4);
+
+        // Inner walls to create corridors
+        const innerWallGeo = new THREE.BoxGeometry(20, 3.5, 0.2);
+        const wall5 = new THREE.Mesh(innerWallGeo, wallMat);
+        wall5.position.set(10, 1.75, 0);
+        backroomsGroup.add(wall5);
+
+        const innerWallGeo2 = new THREE.BoxGeometry(15, 3.5, 0.2);
+        const wall6 = new THREE.Mesh(innerWallGeo2, wallMat);
+        wall6.rotation.y = Math.PI / 2;
+        wall6.position.set(-5, 1.75, -10);
+        backroomsGroup.add(wall6);
+
+        // --- NEW WALLS TO MAKE CORRIDORS (Kept) ---
+        const innerWallGeo3 = new THREE.BoxGeometry(25, 3.5, 0.2);
+        const wall7 = new THREE.Mesh(innerWallGeo3, wallMat);
+        wall7.rotation.y = Math.PI / 2;
+        wall7.position.set(10, 1.75, -15);
+        backroomsGroup.add(wall7);
+
+        const innerWallGeo4 = new THREE.BoxGeometry(20, 3.5, 0.2);
+        const wall8 = new THREE.Mesh(innerWallGeo4, wallMat);
+        wall8.position.set(-15, 1.75, 5);
+        backroomsGroup.add(wall8);
+
+        const innerWallGeo5 = new THREE.BoxGeometry(10, 3.5, 0.2);
+        const wall9 = new THREE.Mesh(innerWallGeo5, wallMat);
+        wall9.rotation.y = Math.PI / 2;
+        wall9.position.set(0, 1.75, 15);
+        backroomsGroup.add(wall9);
+        // --- END NEW WALLS ---
+
+        // Fluorescent Lights
+        const lightFixtureMat = new THREE.MeshStandardMaterial({
+          color: 0x999999,
+          roughness: 0.3,
+          metalness: 0.2,
+        });
+        const lightTubeMat = new THREE.MeshStandardMaterial({
+          color: 0xffffee,
+          emissive: 0xffffee,
+          emissiveIntensity: 3,
+        });
+
+        for (let i = 0; i < 5; i++) {
+          for (let j = 0; j < 5; j++) {
+            const fixtureGeo = new THREE.BoxGeometry(3, 0.1, 0.5);
+            const fixture = new THREE.Mesh(fixtureGeo, lightFixtureMat);
+            fixture.position.set(i * 10 - 20, 3.45, j * 10 - 20);
+            backroomsGroup.add(fixture);
+
+            const tubeGeo = new THREE.CylinderGeometry(0.05, 0.05, 2.8, 8);
+            const tube = new THREE.Mesh(tubeGeo, lightTubeMat);
+            tube.rotation.z = Math.PI / 2;
+            tube.position.set(i * 10 - 20, 3.45, j * 10 - 20);
+            backroomsGroup.add(tube);
+
+            const rectLight = new THREE.RectAreaLight(0xffffee, 5, 2.8, 0.3);
+            rectLight.position.set(i * 10 - 20, 3.4, j * 10 - 20);
+            rectLight.lookAt(i * 10 - 20, 0, j * 10 - 20);
+            backroomsGroup.add(rectLight);
+          }
+        }
+
+        // Puddles (using Reflector)
+        const puddleGeo = new THREE.CircleGeometry(1.5, 32);
+        const puddle = new Reflector(puddleGeo, {
+          clipBias: 0.003,
+          textureWidth: window.innerWidth * window.devicePixelRatio,
+          textureHeight: window.innerHeight * window.devicePixelRatio,
+          color: 0x504533,
+          recursion: 1,
+        });
+        puddle.rotation.x = -Math.PI / 2;
+        puddle.position.set(5, 0.01, -2);
+        backroomsGroup.add(puddle);
+
+        const puddle2 = new Reflector(puddleGeo, {
+          clipBias: 0.003,
+          textureWidth: window.innerWidth * window.devicePixelRatio,
+          textureHeight: window.innerHeight * window.devicePixelRatio,
+          color: 0x504533,
+          recursion: 1,
+        });
+        puddle2.rotation.x = -Math.PI / 2;
+        puddle2.position.set(-3, 0.01, 4);
+        puddle2.scale.set(0.7, 0.7, 0.7);
+        backroomsGroup.add(puddle2);
+      }
+
+      // --- Texture Generation ---
+
+      function createStreetTexture(size) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        // Asphalt
+        ctx.fillStyle = "#282828";
+        ctx.fillRect(0, 0, size, size);
+        for (let i = 0; i < 5000; i++) {
+          ctx.fillStyle = "rgba(255, 255, 255, " + Math.random() * 0.05 + ")";
+          ctx.fillRect(Math.random() * size, Math.random() * size, 2, 2);
+        }
+
+        // Lane markings
+        ctx.fillStyle = "rgba(255, 215, 0, 0.6)";
+        ctx.fillRect(size / 2 - 5, 0, 10, size / 3);
+        ctx.fillRect(size / 2 - 5, (size * 2) / 3, 10, size / 3);
+
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      function createSidewalkTexture(size) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#666";
+        ctx.fillRect(0, 0, size, size);
+        for (let i = 0; i < 1000; i++) {
+          ctx.fillStyle = "rgba(255, 255, 255, " + Math.random() * 0.08 + ")";
+          ctx.fillRect(Math.random() * size, Math.random() * size, 1, 1);
+        }
+        // Cracks
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.2)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(size / 2, 0);
+        ctx.lineTo(size / 2, size);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, size / 2);
+        ctx.lineTo(size, size / 2);
+        ctx.stroke();
+
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      function createBuildingTexture(size) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#4a4a4a"; // Concrete/brick base
+        ctx.fillRect(0, 0, size, size);
+
+        // Windows
+        for (let y = 20; y < size - 20; y += 60) {
+          for (let x = 20; x < size - 20; x += 60) {
+            const isLit = Math.random() > 0.8;
+            ctx.fillStyle = isLit
+              ? "rgba(255, 220, 150, 0.8)"
+              : "rgba(30, 30, 50, 0.7)";
+            ctx.fillRect(x, y, 40, 40);
+            ctx.strokeStyle = "#222";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x, y, 40, 40);
+          }
+        }
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      function createCarpetTexture(size) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#c9a86a"; // Base yellow-beige
+        ctx.fillRect(0, 0, size, size);
+
+        // Damp stains and noise
+        for (let i = 0; i < 40000; i++) {
+          ctx.fillStyle = "rgba(0, 0, 0, " + Math.random() * 0.05 + ")";
+          ctx.fillRect(Math.random() * size, Math.random() * size, 3, 3);
+        }
+        for (let i = 0; i < 20; i++) {
+          ctx.fillStyle =
+            "rgba(90, 70, 40, " + (Math.random() * 0.1 + 0.05) + ")";
+          ctx.beginPath();
+          ctx.ellipse(
+            Math.random() * size,
+            Math.random() * size,
+            Math.random() * 50 + 20,
+            Math.random() * 50 + 20,
+            Math.random() * Math.PI,
+            0,
+            2 * Math.PI
+          );
+          ctx.fill();
+        }
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      function createWallpaperTexture(size) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#fef3a0"; // Mono-yellow
+        ctx.fillRect(0, 0, size, size);
+
+        // Subtle pattern
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.04)";
+        ctx.lineWidth = 1;
+        for (let i = 0; i < size; i += 30) {
+          ctx.beginPath();
+          ctx.moveTo(i, 0);
+          ctx.lineTo(i, size);
+          ctx.stroke();
+        }
+
+        // Peeling edges / grime
+        ctx.fillStyle = "rgba(80, 60, 30, 0.1)";
+        ctx.fillRect(0, 0, size, 20);
+        ctx.fillRect(0, size - 20, size, 20);
+
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      function createCeilingTexture(size) {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#c0c0c0"; // Light gray tile
+        ctx.fillRect(0, 0, size, size);
+
+        // Grid lines
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.15)";
+        ctx.lineWidth = 2;
+        for (let i = 0; i < size; i += size / 4) {
+          ctx.beginPath();
+          ctx.moveTo(i, 0);
+          ctx.lineTo(i, size);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, i);
+          ctx.lineTo(size, i);
+          ctx.stroke();
+        }
+        return new THREE.CanvasTexture(canvas);
+      }
+
+      // --- Audio Synthesis (All code removed) ---
+
+      // --- Animation Loop & Cutscene Logic ---
+
+      function animate() {
+        if (redirecting) return;
+
+        requestAnimationFrame(animate);
+
+        const delta = clock.getDelta();
+        const time = clock.getElapsedTime();
+
+        updateCutsceneState(time, delta);
+
+        composer.render(delta);
+      }
+
+      function updateCutsceneState(time, delta) {
+        // --- TIMELINE ADJUSTED ---
+
+        // --- Phase 1: Walking (0s - 5s) ---
+        if (time < 5.0 && cutsceneState === STATE.WALKING) {
+          camera.position.z -= 2.0 * delta; // Walk forward
+          camera.position.y = 1.7 + Math.sin(time * 6.0) * 0.04; // Head bob
+          camera.rotation.y = Math.sin(time * 3.0) * 0.01; // Slight side-to-side
+
+          // Audio removed
+        }
+
+        // --- Phase 2: Glitch (5s - 7s) ---
+        else if (time >= 5.0 && time < 7.0) {
+          if (cutsceneState === STATE.WALKING) {
+            // Start glitch
+            cutsceneState = STATE.GLITCH;
+            // Audio removed
+            filmPass.enabled = true;
+            chromaticAberrationPass.enabled = true;
+          }
+
+          // Tilt camera down
+          camera.rotation.x = THREE.MathUtils.lerp(
+            camera.rotation.x,
+            0.5,
+            delta * 3.0
+          );
+
+          // Screen shake
+          camera.position.x += (Math.random() - 0.5) * 0.05;
+          camera.position.z += (Math.random() - 0.5) * 0.05;
+
+          // Increase effects
+          filmPass.uniforms.nIntensity.value = (time - 5.0) * 2.0;
+          chromaticAberrationPass.uniforms.uDistortion.value =
+            (time - 5.0) * 1.5;
+        }
+
+        // --- Phase 3: Fall (7s - 10s) ---
+        else if (time >= 7.0 && time < 10.0) {
+          if (cutsceneState === STATE.GLITCH) {
+            cutsceneState = STATE.FALLING;
+            // Audio removed
+            streetGroup.visible = false; // Noclip!
+            scene.fog = new THREE.Fog(0x000000, 1, 250); // Black void fog
+            desaturationPass.enabled = true;
+
+            // Reset bloom to be blurry
+            bloomPass.threshold = 0.1;
+            bloomPass.strength = 0.4;
+            bloomPass.radius = 1.0;
+          }
+
+          // Accelerate fall
+          let fallProgress = (time - 7.0) / 3.0; // 3 second fall
+          let easedProgress = fallProgress * fallProgress; // Ease-in
+
+          camera.position.y = THREE.MathUtils.lerp(
+            1.7,
+            backroomsGroup.position.y + 0.2,
+            easedProgress
+          );
+          camera.position.x = THREE.MathUtils.lerp(
+            camera.position.x,
+            0,
+            delta * 5.0
+          );
+          camera.position.z = THREE.MathUtils.lerp(
+            camera.position.z,
+            0,
+            delta * 5.0
+          );
+
+          // Look down
+          camera.rotation.x = THREE.MathUtils.lerp(
+            0.5,
+            Math.PI / 2.5,
+            fallProgress
+          );
+
+          // Audio removed
+          desaturationPass.uniforms.uAmount.value = easedProgress;
+          chromaticAberrationPass.uniforms.uDistortion.value =
+            THREE.MathUtils.lerp(3.0, 0.0, fallProgress);
+        }
+
+        // --- Phase 4: Impact (10s - 11s) ---
+        else if (time >= 10.0 && time < 11.0) {
+          if (cutsceneState === STATE.FALLING) {
+            cutsceneState = STATE.IMPACT;
+            // Audio removed
+
+            // Hit floor
+            camera.position.y = backroomsGroup.position.y + 0.1;
+            camera.rotation.x = Math.PI / 2; // Look at floor
+            camera.rotation.z = 0.3; // Roll
+
+            blackoutOverlay.style.opacity = "1";
+          }
+        }
+
+        // --- Phase 5: Stand Up (11s - 14s) ---
+        else if (time >= 11.0 && time < 14.0) {
+          if (cutsceneState === STATE.IMPACT) {
+            cutsceneState = STATE.STAND_UP;
+
+            // Fade in from black
+            blackoutOverlay.style.opacity = "0";
+
+            // Disable fall effects, enable backrooms effects
+            desaturationPass.enabled = false;
+            filmPass.enabled = false;
+            chromaticAberrationPass.enabled = false;
+
+            // Reset bloom for fluorescents
+            bloomPass.threshold = 0.95;
+            bloomPass.strength = 1.0;
+            bloomPass.radius = 0.8;
+
+            // Audio removed
+          }
+
+          // Smoothly rise up
+          let standProgress = (time - 11.0) / 3.0; // 3 second stand up
+          camera.position.y = THREE.MathUtils.lerp(
+            backroomsGroup.position.y + 0.1,
+            backroomsGroup.position.y + 1.7,
+            standProgress
+          );
+          camera.rotation.x = THREE.MathUtils.lerp(
+            Math.PI / 2,
+            0,
+            standProgress
+          );
+          camera.rotation.z = THREE.MathUtils.lerp(0.3, 0, standProgress);
+        }
+
+        // --- Phase 6: Backrooms Reveal (14s - 28s) ---
+        else if (time >= 14.0 && time < 28.0) {
+          // 14 second reveal
+          if (cutsceneState === STATE.STAND_UP) {
+            cutsceneState = STATE.REVEAL;
+          }
+
+          // Breathing sway
+          camera.position.y =
+            backroomsGroup.position.y + 1.7 + Math.sin(time * 0.5) * 0.02;
+          camera.rotation.x = Math.sin(time * 0.5) * 0.01;
+
+          // Slow pan around
+          let panProgress = (time - 14.0) / 14.0; // 14 second pan
+
+          if (panProgress < 0.3) {
+            // Look left
+            camera.rotation.y = THREE.MathUtils.lerp(
+              0,
+              -Math.PI / 6,
+              panProgress / 0.3
+            );
+          } else if (panProgress < 0.6) {
+            // Look up at ceiling
+            camera.rotation.x = THREE.MathUtils.lerp(
+              0,
+              0.3,
+              (panProgress - 0.3) / 0.3
+            );
+          } else {
+            // Pan right
+            camera.rotation.y = THREE.MathUtils.lerp(
+              -Math.PI / 6,
+              Math.PI / 4,
+              (panProgress - 0.6) / 0.4
+            );
+            camera.rotation.x = THREE.MathUtils.lerp(
+              0.3,
+              -0.1,
+              (panProgress - 0.6) / 0.4
+            ); // Look at carpet
+          }
+        }
+
+        // --- Phase 7: End (28s) ---
+        else if (time >= 28.0) {
+          if (cutsceneState !== STATE.END) {
+            cutsceneState = STATE.END;
+            redirectToLevel0();
+          }
+        }
+      }
+
+      // --- Event Handlers ---
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      function onKeyDown(event) {
+        if (event.code === "Escape" && !redirecting) {
+          redirectToLevel0();
+        }
+      }
+
+      function startCutscene() {
+        // <-- No longer async
+        console.log("startCutscene called.");
+
+        // All audio and pointer lock logic removed
+
+        // Start cutscene
+        console.log("Starting animation clock and loop.");
+        cutsceneState = STATE.WALKING;
+        clock.start();
+        animate();
+      }
+
+      function redirectToLevel0() {
+        if (redirecting) return;
+        redirecting = true;
+
+        // Show skip message
+        skipMessageOverlay.style.display = "block";
+
+        // Stop all sounds removed
+
+        // Fade out renderer
+        document.body.style.transition = "opacity 1s";
+        document.body.style.opacity = "0";
+
+        // Redirect
+        setTimeout(() => {
+          window.location.href = "Level0.html"; // The requested redirect
+        }, 1000);
+      }
+
+      // --- Start ---
+      init();
+    </script>
+  </body>
+</html>
